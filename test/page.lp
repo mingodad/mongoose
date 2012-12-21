@@ -13,7 +13,7 @@
     end
 
     for i = 1, 100 do
-      if is_prime(i) then print('<span>' .. i .. '</span>&nbsp;') end
+      if is_prime(i) then write('<span>' .. i .. '</span>&nbsp;') end
     end
 
  ?>
@@ -22,15 +22,15 @@
  <form method="POST"><input type="text" name="t1"/><input type="submit"></form>
 
  <pre>
-   POST data: [<?  post_data = read() print(post_data) ?>]
-   request method: [<? print(request_info.request_method) ?>]
-   IP/port: [<? print(request_info.remote_ip, ':', request_info.remote_port) ?>]
-   URI: [<? print(request_info.uri) ?>]
-   HTTP version [<? print(request_info.http_version) ?>]
+   POST data: [<?  post_data = read() write(post_data) ?>]
+   request method: [<? write(request_info.request_method) ?>]
+   IP/port: [<? write(request_info.remote_ip, ':', request_info.remote_port) ?>]
+   URI: [<? write(request_info.uri) ?>]
+   HTTP version [<? write(request_info.http_version) ?>]
    HEADERS:
    <? 
      for name, value in pairs(request_info.http_headers) do
-       print(name, ':', value, '\n')
+       write(name, ':', value, '\n')
      end
    ?>
      
