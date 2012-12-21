@@ -1,0 +1,40 @@
+<html>
+  <p>Prime numbers from 0 to 100, calculated by Squirrel:</p>
+ <?
+
+    function is_prime(n){
+      if( n <= 0 ) return false;
+      if( n <= 2 ) return true;
+      if (n % 2 == 0) return false;
+      for(local i = 3, m = n / 2; i < m ; i+=2){
+        if (n % i == 0) return false;
+  }
+      return true;
+    }
+
+    for(local i = 1; i < 100; ++i){
+      if( is_prime(i) ) write("<span>", i , "</span>&nbsp;");
+   }
+
+ ?>
+
+ <p>Reading POST data from Squirrel (click submit):</p>
+ <form method="POST"><input type="text" name="t1"/><input type="submit"></form>
+
+ <pre>
+   POST data: [<?  local post_data = read(); write(post_data); ?>]
+   request method: [<? write(request_info.request_method) ?>]
+   IP/port: [<? write(request_info.remote_ip, ":", request_info.remote_port) ?>]
+   URI: [<? write(request_info.uri) ?>]
+   HTTP version [<? write(request_info.http_version) ?>]
+   HEADERS:
+   <? 
+     foreach( name, value in request_info.http_headers){
+       write(name, ":", value, "\n");
+     }
+   ?>
+     
+ </pre>
+
+
+</html>
