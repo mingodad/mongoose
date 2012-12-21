@@ -28,6 +28,9 @@ all:
 LUA         = lua-5.2.1/src
 LUA_FLAGS   = -DUSE_LUA -I$(LUA) -L$(LUA) -llua -lm
 
+SQUIRREL         = SQUIRREL3
+SQUIRREL_FLAGS   = -DUSE_SQUIRREL -I$(SQUIRREL)/include -L$(SQUIRREL) -lsquirrel -lsqtdlib -lm
+
 GCC_WARNS   = -W -Wall -pedantic
 CFLAGS      = -std=c99 -O2 $(GCC_WARNS) $(COPT)
 MAC_SHARED  = -flat_namespace -bundle -undefined suppress
