@@ -229,6 +229,8 @@ typedef int SOCKET;
 #ifdef USE_LUA
 #include <lua.h>
 #include <lauxlib.h>
+#elif defined(USE_SQUIRREL)
+#include "squirrel.h"
 #endif
 
 #define MONGOOSE_VERSION "3.4"
@@ -1680,7 +1682,7 @@ int mg_get_var(const char *data, size_t data_len, const char *name,
 
         // Decode variable into destination buffer
         len = url_decode(p, (size_t)(s - p), dst, dst_len, 1);
-        
+
         // Redirect error code from -1 to -2 (destination buffer too small).
         if (len == -1) {
           len = -2;
@@ -3894,7 +3896,7 @@ static uint32_t get_remote_ip(const struct mg_connection *conn) {
   return ntohl(* (uint32_t *) &conn->client.rsa.sin.sin_addr);
 }
 
-#ifdef USE_LUA
+#if defined(USE_LUA) || defined(USE_SQUIRREL)
 
 #ifdef _WIN32
 static void *mmap(void *addr, int64_t len, int prot, int flags, int fd,
@@ -3913,6 +3915,8 @@ static void *mmap(void *addr, int64_t len, int prot, int flags, int fd,
 #else
 #include <sys/mman.h>
 #endif
+
+#ifdef USE_LUA
 
 static void lsp(struct mg_connection *conn, const char *p, int64_t len,
                 lua_State *L) {
@@ -3939,7 +3943,7 @@ static void lsp(struct mg_connection *conn, const char *p, int64_t len,
   }
 }
 
-static int lsp_mg_print(lua_State *L) {
+static int lsp_mg_write(lua_State *L) {
   int i, num_args;
   const char *str;
   size_t size;
@@ -3958,12 +3962,20 @@ static int lsp_mg_print(lua_State *L) {
 
 static int lsp_mg_read(lua_State *L) {
   struct mg_connection *conn = lua_touserdata(L, lua_upvalueindex(1));
-  char buf[1024];
-  int len = mg_read(conn, buf, sizeof(buf));
-
-  lua_settop(L, 0);
-  lua_pushlstring(L, buf, len);
-
+  int n = luaL_optint(L, 1, 8192);
+  size_t rlen;  /* how much to read */
+  size_t nr;  /* number of chars actually read */
+  luaL_Buffer b;
+  luaL_buffinit(L, &b);
+  rlen = LUAL_BUFFERSIZE;  /* try to read that much each time */
+  do {
+      char *p = luaL_prepbuffer(&b);
+      if (rlen > n) rlen = n;  /* cannot read more than asked */
+      nr = mg_read(conn, p, rlen);
+      luaL_addsize(&b, nr);
+      n -= nr;  /* still have to read `n' chars */
+  } while (n > 0 && nr == rlen);  /* until end of count or eof */
+  luaL_pushresult(&b);  /* close buffer */
   return 1;
 }
 
@@ -3988,8 +4000,8 @@ static void prepare_lua_environment(struct mg_connection *conn, lua_State *L) {
 
   // Register "print" function which calls mg_write()
   lua_pushlightuserdata(L, conn);
-  lua_pushcclosure(L, lsp_mg_print, 1);
-  lua_setglobal(L, "print");
+  lua_pushcclosure(L, lsp_mg_write, 1);
+  lua_setglobal(L, "write");
 
   // Register mg_read()
   lua_pushlightuserdata(L, conn);
@@ -4040,7 +4052,174 @@ static void handle_lsp_request(struct mg_connection *conn, const char *path,
   if (p) munmap(p, filep->size);
   mg_fclose(filep);
 }
-#endif // USE_LUA
+
+#elif defined(USE_SQUIRREL)
+
+void sq_printfunc(HSQUIRRELVM v,const SQChar *s,...)
+{
+      va_list vl;
+	va_start(vl, s);
+	vfprintf(stdout, s, vl);
+	va_end(vl);
+}
+
+void sq_errorfunc(HSQUIRRELVM v,const SQChar *s,...)
+{
+	va_list vl;
+	va_start(vl, s);
+	vfprintf(stderr, s, vl);
+	va_end(vl);
+}
+
+static void sqsp(struct mg_connection *conn, const char *p, int64_t len,
+                HSQUIRRELVM v) {
+  int i, j, pos = 0;
+
+  for (i = 0; i < len; i++) {
+    if (p[i] == '<' && p[i + 1] == '?') {
+      for (j = i + 1; j < len ; j++) {
+        if (p[j] == '?' && p[j + 1] == '>') {
+          mg_write(conn, p + pos, i - pos);
+          if (sq_compilebuffer(v, p + (i + 2), j - (i + 2), "sqsp", SQFalse) == SQ_OK) {
+            sq_pushroottable(v);
+            sq_call(v, 1, SQFalse, SQTrue);
+            sq_poptop(v); //remove function from stack
+          }
+          pos = j + 2;
+          i = pos - 1;
+          break;
+        }
+      }
+    }
+  }
+
+  if (i > pos) {
+    mg_write(conn, p + pos, i - pos);
+  }
+}
+
+static int sqsp_mg_write(HSQUIRRELVM v) {
+  int i, num_args;
+  const char *str;
+  size_t size;
+  struct mg_connection *conn;
+  sq_getuserpointer(v, -1, (SQUserPointer*)&conn);
+
+  num_args = sq_gettop(v);
+  for (i = 2; i < num_args; i++) { //last argument is the free variable
+    sq_tostring(v, i);
+    sq_getstring(v, -1, &str);
+    size = sq_getsize(v, -1);
+    mg_write(conn, str, size);
+  }
+
+  return 0;
+}
+
+static int sqsp_mg_read(HSQUIRRELVM v) {
+  struct mg_connection *conn;
+  sq_getuserpointer(v, -1, (void**)&conn);
+  SQInteger param_len;
+  if(sq_gettop(v) > 2) sq_getinteger(v, 2, &param_len);
+  else param_len = 8192;
+  SQChar *data = sq_getscratchpad(v,param_len);
+  int len = mg_read(conn, data, param_len);
+  sq_pushstring(v, data, len);
+
+  return 1;
+}
+
+static void reg_string(HSQUIRRELVM v, const char *name, const char *val) {
+  sq_pushstring(v, name, -1);
+  if(val) sq_pushstring(v, val, -1);
+  else sq_pushnull(v);
+  sq_rawset(v, -3);
+}
+
+static void reg_int(HSQUIRRELVM v, const char *name, int val) {
+  sq_pushstring(v, name, -1);
+  sq_pushinteger(v, val);
+  sq_rawset(v, -3);
+}
+
+static void prepare_sq_environment(struct mg_connection *conn, HSQUIRRELVM v) {
+  const struct mg_request_info *ri = mg_get_request_info(conn);
+  int i;
+
+    sq_pushroottable(v);
+    sqstd_register_bloblib(v);
+    sqstd_register_iolib(v);
+    sqstd_register_systemlib(v);
+    sqstd_register_mathlib(v);
+    sqstd_register_stringlib(v);
+
+	sqstd_seterrorhandlers(v); //registers the default error handlers
+	sq_setprintfunc(v, sq_printfunc, sq_errorfunc); //sets the print function
+
+  // Register "write" function which calls mg_write()
+	sq_pushstring(v,_SC("write"),-1);
+	sq_pushuserpointer(v,conn);
+	sq_newclosure(v,sqsp_mg_write,1);
+	sq_setparamscheck(v,-2,NULL);
+	sq_newslot(v,-3,SQFalse);
+
+  // Register mg_read()
+	sq_pushstring(v,_SC("read"),-1);
+	sq_pushuserpointer(v,conn);
+	sq_newclosure(v,sqsp_mg_read,1);
+	sq_setparamscheck(v, -1,".i");
+	sq_newslot(v,-3,SQFalse);
+
+  // Export request_info
+  sq_pushstring(v,_SC("request_info"),-1);
+  sq_newtable(v);
+  reg_string(v, "request_method", ri->request_method);
+  reg_string(v, "uri", ri->uri);
+  reg_string(v, "http_version", ri->http_version);
+  reg_string(v, "query_string", ri->query_string);
+  reg_int(v, "remote_ip", ri->remote_ip);
+  reg_int(v, "remote_port", ri->remote_port);
+  reg_int(v, "num_headers", ri->num_headers);
+  sq_pushstring(v, "http_headers", -1);
+  sq_newtable(v);
+  for (i = 0; i < ri->num_headers; i++) {
+    reg_string(v, ri->http_headers[i].name, ri->http_headers[i].value);
+  }
+  sq_rawset(v, -3);
+
+  sq_newslot(v,-3,SQFalse); //request_info
+  sq_poptop(v); //remove root table
+}
+
+static void handle_sqsp_request(struct mg_connection *conn, const char *path,
+                               struct file *filep) {
+  void *p = NULL;
+  HSQUIRRELVM v = NULL;
+
+  if (!mg_fopen(conn, path, "r", filep)) {
+    send_http_error(conn, 404, "Not Found", "%s", "File not found");
+  } else if (filep->membuf == NULL &&
+             (p = mmap(NULL, filep->size, PROT_READ, MAP_PRIVATE,
+                       fileno(filep->fp), 0)) == MAP_FAILED) {
+    send_http_error(conn, 500, http_500_error, "%s", "x");
+  } else if ((v = sq_open(1024)) == NULL) {
+    send_http_error(conn, 500, http_500_error, "%s", "y");
+  } else {
+    mg_printf(conn, "%s", "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\nConnection: close\r\n\r\n");
+    prepare_sq_environment(conn, v);
+    conn->request_info.ev_data = v;
+    call_user(conn, MG_INIT_LUA);
+    sqsp(conn, filep->membuf == NULL ? p : filep->membuf, filep->size, v);
+  }
+
+  if (v) sq_close(v);
+  if (p) munmap(p, filep->size);
+  mg_fclose(filep);
+}
+
+#endif
+#endif // USE_LUA || USE_SQUIRREL
 
 int mg_upload(struct mg_connection *conn, const char *destination_dir) {
   const char *content_type_header, *boundary_start;
@@ -4215,6 +4394,9 @@ static void handle_request(struct mg_connection *conn) {
 #ifdef USE_LUA
   } else if (match_prefix("**.lp$", 6, path) > 0) {
     handle_lsp_request(conn, path, &file);
+#elif defined(USE_SQUIRREL)
+  } else if (match_prefix("**.sqp$", 7, path) > 0) {
+    handle_sqsp_request(conn, path, &file);
 #endif
 #if !defined(NO_CGI)
   } else if (match_prefix(conn->ctx->config[CGI_EXTENSIONS],
