@@ -28,35 +28,30 @@ all:
 LUA         = lua-5.2.1/src
 LUA_FLAGS   = -DUSE_LUA -I$(LUA) -L$(LUA) -llua -lm
 
-SQUIRREL         = SQUIRREL3
-SQUIRREL_FLAGS   = -DUSE_SQUIRREL -I$(SQUIRREL)/include -L$(SQUIRREL) -lsquirrel -lsqtdlib -lm
-
-GCC_WARNS   = -W -Wall -pedantic
-CFLAGS      = -std=c99 -O2 $(GCC_WARNS) $(COPT)
-MAC_SHARED  = -flat_namespace -bundle -undefined suppress
-LINFLAGS    = -ldl -pthread $(CFLAGS)
+CFLAGS      = -std=c99 -O2 -W -Wall -pedantic $(COPT)
 LIB         = lib$(PROG).so$(MONGOOSE_LIB_SUFFIX)
 
 # Make sure that the compiler flags come last in the compilation string.
 # If not so, this can break some on some Linux distros which use
 # "-Wl,--as-needed" turned on by default  in cc command.
 # Also, this is turned in many other distros in static linkage builds.
+MONGOOSE_CFILES = mongoose.c mongoose_os.c mongoose_ssl.c mongoose_thread.c
 linux:
-	$(CC) mongoose.c -shared -fPIC -fpic -o $(LIB) -Wl,-soname,$(LIB) $(LINFLAGS)
-	$(CC) mongoose.c main.c -o $(PROG) $(LINFLAGS)
+	$(CC) $(MONGOOSE_CFILES) -shared -fPIC -fpic -o $(LIB) -Wl,-soname,$(LIB) -ldl -pthread $(CFLAGS)
+	$(CC) $(MONGOOSE_CFILES) main.c -o $(PROG) -ldl -pthread $(CFLAGS)
 
 bsd:
-	$(CC) mongoose.c -shared -pthread -fpic -fPIC -o $(LIB) $(CFLAGS)
-	$(CC) mongoose.c main.c -pthread -o $(PROG) $(CFLAGS)
+	$(CC) $(MONGOOSE_CFILES) -shared -pthread -fpic -fPIC -o $(LIB) $(CFLAGS)
+	$(CC) $(MONGOOSE_CFILES) main.c -pthread -o $(PROG) $(CFLAGS)
 
 mac:
-	$(CC) mongoose.c -pthread -o $(LIB) $(MAC_SHARED) $(CFLAGS)
-	$(CC) mongoose.c main.c -pthread -o $(PROG) $(CFLAGS)
+	$(CC) $(MONGOOSE_CFILES) -pthread -o $(LIB) -flat_namespace -bundle -undefined suppress $(CFLAGS)
+	$(CC) $(MONGOOSE_CFILES) main.c -DUSE_COCOA -pthread $(CFLAGS) -framework Cocoa -ObjC -arch i386 -arch x86_64 -o $(PROG)
+	V=`perl -lne '/define\s+MONGOOSE_VERSION\s+"(\S+)"/ and print $$1' mongoose.c`; DIR=dmg/$(PROG).app && rm -rf $$DIR && mkdir -p $$DIR/Contents/{MacOS,Resources} && install -m 644 build/mongoose_*.png $$DIR/Contents/Resources/ && install -m 644 build/Info.plist $$DIR/Contents/ && install -m 755 $(PROG) $$DIR/Contents/MacOS/ && ln -fs /Applications dmg/ ; hdiutil create $(PROG)_$$V.dmg -volname "Mongoose $$V" -srcfolder dmg -ov #; rm -rf dmg
 
 solaris:
-	$(CC) mongoose.c -pthread -lnsl \
-		-lsocket -fpic -fPIC -shared -o $(LIB) $(CFLAGS)
-	$(CC) mongoose.c main.c -pthread -lnsl -lsocket -o $(PROG) $(CFLAGS)
+	$(CC) $(MONGOOSE_CFILES) -pthread -lnsl -lsocket -fpic -fPIC -shared -o $(LIB) $(CFLAGS)
+	$(CC) $(MONGOOSE_CFILES) main.c -pthread -lnsl -lsocket -o $(PROG) $(CFLAGS)
 
 
 ##########################################################################
@@ -117,10 +112,10 @@ lua.lib:
 	$(MSVC)/bin/lib $(LUA_SOURCES:%.c=%.obj) /out:$@
 
 windows: cyassl.lib lua.lib
-	$(MSVC)/bin/rc win32\res.rc
-	$(CL) /I win32 main.c mongoose.c /GA $(LINK) win32\res.res \
+	$(MSVC)/bin/rc build\res.rc
+	$(CL) /Ibuild main.c mongoose.c /GA $(LINK) build\res.res \
 		$(GUILIB) /out:$(PROG).exe
-	$(CL) mongoose.c /GD $(LINK) /DLL /DEF:win32\dll.def /out:$(PROG).dll
+	$(CL) mongoose.c /GD $(LINK) /DLL /DEF:build\dll.def /out:$(PROG).dll
 
 # Build for Windows under MinGW
 #MINGWDBG= -DDEBUG -O0 -ggdb
@@ -128,22 +123,22 @@ MINGWDBG= -DNDEBUG -Os
 MINGWOPT=  -W -Wall -mthreads -Wl,--subsystem,console $(MINGWDBG) -DHAVE_STDINT $(GCC_WARNINGS) $(COPT)
 #MINGWOPT= -W -Wall -mthreads -Wl,--subsystem,windows $(MINGWDBG) -DHAVE_STDINT $(GCC_WARNINGS) $(COPT)
 mingw:
-	windres win32\res.rc win32\res.o
+	windres build\res.rc build\res.o
 	$(CC) $(MINGWOPT) mongoose.c -lws2_32 \
 		-shared -Wl,--out-implib=$(PROG).lib -o $(PROG).dll
-	$(CC) $(MINGWOPT) -Iwin32 mongoose.c main.c win32\res.o -lws2_32 -ladvapi32 \
-		-o $(PROG).exe
+	$(CC) $(MINGWOPT) -build mongoose.c main.c build\res.o \
+	-lws2_32 -ladvapi32 -o $(PROG).exe
 
 # Build for Windows under Cygwin
 #CYGWINDBG= -DDEBUG -O0 -ggdb
 CYGWINDBG= -DNDEBUG -Os
 CYGWINOPT=  -W -Wall -mthreads -Wl,--subsystem,console $(CYGWINDBG) -DHAVE_STDINT $(GCC_WARNINGS) $(COPT)
 cygwin:
-	windres ./win32/res.rc ./win32/res.o
+	windres ./build/res.rc ./build/res.o
 	$(CC) $(CYGWINOPT) mongoose.c -lws2_32 \
 		-shared -Wl,--out-implib=$(PROG).lib -o $(PROG).dll
-	$(CC) $(CYGWINOPT) -Iwin32 mongoose.c main.c ./win32/res.o -lws2_32 \
-  -ladvapi32 -o $(PROG).exe
+	$(CC) $(CYGWINOPT) -Ibuild mongoose.c main.c ./build/res.o \
+	-lws2_32 -ladvapi32 -o $(PROG).exe
 
 ##########################################################################
 ###            Manuals, cleanup, test, release
@@ -160,7 +155,7 @@ tests:
 	perl test/test.pl $(TEST)
 
 release: clean
-	F=mongoose-`perl -lne '/define\s+MONGOOSE_VERSION\s+"(\S+)"/ and print $$1' mongoose.c`.tgz ; cd .. && tar -czf x mongoose/{LICENSE,Makefile,bindings,examples,test,win32,mongoose.c,mongoose.h,mongoose.1,main.c} && mv x mongoose/$$F
+	F=mongoose-`perl -lne '/define\s+MONGOOSE_VERSION\s+"(\S+)"/ and print $$1' mongoose.c`.tgz ; cd .. && tar -czf x mongoose/{LICENSE,Makefile,examples,test,build,*.[ch],*.md} && mv x mongoose/$$F
 
 clean:
-	rm -rf *.o *.core $(PROG) *.obj *.so $(PROG).txt *.dSYM *.tgz $(PROG).exe *.dll *.lib win32/res.o
+	rm -rf *.o *.core $(PROG) *.obj *.so $(PROG).txt *.dSYM *.tgz $(PROG).exe *.dll *.lib build/res.o build/res.RES
